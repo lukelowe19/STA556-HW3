@@ -1,0 +1,192 @@
+---
+title: "STA 556 — Homework 3: Reproducibility & Matrix Computation"
+author: "Lukas Lowe"
+format:
+  html:
+    embed-resources: true
+    toc: true
+jupyter: python3
+---
+
+# Part 1 — Reproducible report and data description
+
+## 1.1 Introduction
+
+I chose the watershed dataset. The response variable is `streamflow_index`, with predictors `snowpack_pct_normal`, `precip_mm`, and `mean_temp_c`. The goal of this report is to fit and diagnose a linear model using matrix computation.
+
+## 1.2 Data inspection and validation
+
+```{python}
+import pandas as pd
+import numpy as np
+
+df_watershed = pd.read_csv("../data/watershed.csv")
+```
+
+```{python}
+print(df_watershed.head())
+print(df_watershed.shape)
+print(df_watershed.dtypes)
+print(df_watershed.isna().sum())
+print(df_watershed["id"].is_unique)
+```
+
+There are a total of `{python} df_watershed.shape[0]` observations and `{python} df_watershed.shape[1]` variables, so the dataframe is a `{python} df_watershed.shape[0]` x `{python} df_watershed.shape[1]` matrix. There are `{python} int(df_watershed.isna().sum().sum())` missing values. Every ID is unique.
+
+# Part 2 — Matrix setup and standardization
+
+```{python}
+predictors = df_watershed[[
+    "snowpack_pct_normal",
+    "precip_mm",
+    "mean_temp_c"
+]].to_numpy()
+
+y = df_watershed[["streamflow_index"]].to_numpy()
+```
+
+```{python}
+means = predictors.mean(axis=0)
+sds = predictors.std(axis=0)
+Z = (
+    predictors - means
+) / sds
+
+print(Z.mean(axis=0))
+print(Z.std(axis=0))
+```
+
+```{python}
+X = np.column_stack([
+    np.ones(len(Z)),
+    Z
+])
+print("predictors:", predictors.shape)
+print("Z:", Z.shape)
+print("X:", X.shape)
+print("y:", y.shape)
+print("rank of X:", np.linalg.matrix_rank(X))
+print("number of predictors (excluding intercept):", predictors.shape[1])
+```
+
+**Written response**
+
+To fit a linear model of the form $y = X\beta + \epsilon$, the estimate $\hat\beta = (X^TX)^{-1}X^Ty$ requires that $X$ and $y$ have compatible shapes (the same number of rows) otherwise the matrix products can't be computed. The intercept column of ones lets the model estimate a baseline response as the predictors are standardized, and the intercept is the expected `streamflow_index` when every predictor is at its mean. Standardizing gives each predictor a mean of about 0 and a standard deviation of 1, which puts them on a common scale so their coefficients can be compared directly. Broadcasting makes this possible without a loop because the length-3 arrays `means` and `sds` have compatible shapes.
+
+# Part 3 — Least squares
+
+```{python}
+beta_hat, *_ = np.linalg.lstsq(
+    X,
+    y,
+    rcond=None
+)
+beta_hat
+```
+
+```{python}
+b = beta_hat.ravel()
+```
+
+The intercept is `{python} f"{b[0]:.3f}"`. The coefficients for the standardized predictors are `{python} f"{b[1]:.3f}"` for `snowpack_pct_normal`, `{python} f"{b[2]:.3f}"` for `precip_mm`, and `{python} f"{b[3]:.3f}"` for `mean_temp_c`.
+
+Holding the other predictors constant, a one standard deviation increase in `snowpack_pct_normal` is associated with an estimated increase in `streamflow_index` of `{python} f"{b[1]:.3f}"`. A one standard deviation increase in `precip_mm` is associated with an estimated increase of `{python} f"{b[2]:.3f}"`, and a one standard deviation increase in `mean_temp_c` is associated with an estimated change of `{python} f"{b[3]:.3f}". `snowpack_pct_normal` has the largest coefficient in absolute value of the three predictors.
+
+```{python}
+fitted = X @ beta_hat
+residuals = y - fitted
+rmse = np.sqrt(
+    np.mean(
+        residuals ** 2
+    )
+)
+print(residuals.mean())
+print(rmse)
+```
+
+**Written response**
+
+`X @ beta_hat` gives the fitted values for the model's predicted `streamflow_index` in each observation, formed as a linear combination of the columns of $X$ weighted by the estimated coefficients. By having an intercept present, least squares makes the residuals orthogonal to the column of ones, so the residuals sum as well as average is very close to 0. RMSE is the root mean squared error, which summarizes how far the predicted values are from the observed values. `X * beta_hat` is an element-wise product that multiplies matching entries and does not combine columns, so it does not produce predictions. `X @ beta_hat` is matrix multiplication, which sums each row's entries times the coefficients to produce one prediction per observation.
+
+# Part 4 — QR, SVD, and conditioning
+
+## QR decomposition
+
+```{python}
+Q, R = np.linalg.qr(X)
+print("Q:", Q.shape)
+print("R:", R.shape)
+```
+
+```{python}
+print(np.allclose(Q @ R, X))
+print(np.allclose(Q.T @ Q, np.eye(Q.shape[1])))
+```
+
+## SVD
+
+```{python}
+U, s, Vt = np.linalg.svd(
+    X,
+    full_matrices=False
+)
+print("U:", U.shape)
+print("s:", s.shape)
+print("Vt:", Vt.shape)
+print("singular values:", s)
+```
+
+```{python}
+X_reconstructed = (
+    U
+    @ np.diag(s)
+    @ Vt
+)
+print(np.allclose(X_reconstructed, X))
+```
+
+## Rank and conditioning
+
+```{python}
+X_raw = np.column_stack([
+    np.ones(len(predictors)),
+    predictors
+])
+
+cond_X = np.linalg.cond(X)
+cond_raw = np.linalg.cond(X_raw)
+
+print("rank of X:", np.linalg.matrix_rank(X))
+print("cond(X):", cond_X)
+print("cond(X_raw):", cond_raw)
+```
+
+```{python}
+print("largest singular value:", s.max())
+print("smallest singular value:", s.min())
+```
+
+```{python}
+corr_Z = np.corrcoef(Z, rowvar=False)
+print(corr_Z)
+det_corr = np.linalg.det(corr_Z)
+print("determinant of predictor correlation matrix:", det_corr)
+```
+
+**Written response**
+
+`Q @ R ≈ X` verifies that the QR factorization reproduces the design matrix. `Q.T @ Q ≈ I` verifies that the columns of $Q$ are orthonormal, meaning they are orthogonal to each other (independent) and each has length 1. The singular values measure how much of $X$'s variation lies along each orthogonal direction where large values are strong directions and small values are weak directions. Here they range from `{python} f"{s.min():.2f}"` to `{python} f"{s.max():.2f}"`, so no direction is close to zero. A large condition number suggests the problem is ill-conditioned, so small changes in the inputs can cause large changes in the outputs, often because of near-redundant predictors or very different scales. The condition number changed substantially after standardization, falling from `{python} f"{cond_raw:.2f}"` for the raw matrix to `{python} f"{cond_X:.2f}"` for the standardized matrix. Measurement scale affects the raw condition number because the raw columns are on very different magnitudes (`precip_mm` is in the hundreds, `mean_temp_c` is in the teens, and the intercept column is all ones), which pulls the singular values apart even when the predictors are not redundant. The standardized design matrix shows no evidence of severe near-redundancy as $X$ has full column rank of `{python} int(np.linalg.matrix_rank(X))`, the smallest singular value is well away from 0, and the determinant of the predictors' correlation matrix is about `{python} f"{det_corr:.3f}"`, which is not near 0.
+
+# Part 5 — Reproducibility and numerical-computing reflection
+
+Clean execution matters because a computational report is only trustworthy if someone else can reproduce every calulation and figure from the raw data and code alone. If a result depends on a cell run out of order, or on a variable that was later deleted, the report no longer shows how the answer was produced.
+
+For the same reason, reusable code should not depend on hidden notebook state. A notebook kernel remembers variables from cells that may have been edited, so code can appear to work just because the kernel remembers what was produced before.
+
+Numerically, `np.linalg.lstsq()` is preferable to computing $(X^TX)^{-1}X^Ty$ by hand because the computation by hand would be an exhausting effort. If we dealt with a dataset of thousands of entries, manually computing $(X^TX)^{-1}X^Ty$ would be a nightmare and take an immense amount of time. 
+
+If we compute `Q @ R` and `U @ np.diag(s) @ Vt` , they only match $X$ up to tiny errors. Exact equality could return `False` even though the factorization is correct, whereas `np.allclose()` checks agreement with rounding in mind and so those tiny errors are ignored.
+
+The condition-number comparison showed me that scale alone can make a design matrix look badly behaved. The raw matrix had a condition number of `{python} f"{cond_raw:.1f}"`, while the standardized matrix had `{python} f"{cond_X:.2f}"`, even though both describe the same predictors and give the same fitted values. A large condition number is more of a warning to see what is going on in the data and not automatically proof of collinearity. 
+
+One reproducibility practice I will carry into the final project is rendering the report from the repository root with relative paths and no manually copied numbers, so every result is generated by code and anyone can reproduce it with a single command. I want my final project to be available to anyone interested, and for them to see the same results. 
